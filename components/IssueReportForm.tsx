@@ -203,7 +203,7 @@ export default function IssueReportForm() {
             );
           })()}
         </div>
-      </div>
+      )}
       {(() => {
         const isVideo = /video\/mp4|video\/quicktime/.test(key);
         return isVideo ? null : (
@@ -250,7 +250,7 @@ export default function IssueReportForm() {
           <button
             type="button"
             onClick={logout}
-            className="text-sm font-medium text-gray-600 underline-offset-2:hover:underline:hover:text-ink"
+            className="text-sm font-medium text-gray-600 underline-offset-2 hover:underline hover:text-ink"
           >
             Sign out
           </button>
@@ -325,7 +325,7 @@ export default function IssueReportForm() {
       <button
         type="submit"
         disabled={isSubmitting}
-        className="mt-7 w-full rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-white transition:hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+        className="mt-7 w-full rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {isSubmitting ? "Creating issue…" : "Create GitHub Issue"}
       </button>
