@@ -76,22 +76,30 @@ export async function createIssue(params: {
       headers: getAuthHeader(),
       body: formData,
     });
-  } catch {
+  } catch (err) {
+    console.error("[createIssue] fetch threw:", err);
     return {
       success: false,
       message: "Could not reach the server. Check your connection and try again.",
     };
   }
 
+  // Log the raw HTTP status so we can see exactly what came back
+  console.log("[createIssue] response status:", response.status, response.statusText);
+
   let data: unknown;
   try {
     data = await response.json();
-  } catch {
+  } catch (err) {
+    console.error("[createIssue] failed to parse JSON body:", err);
     return {
       success: false,
       message: "The server returned an unexpected response.",
     };
   }
+
+  // Log the full parsed body returned by the route
+  console.log("[createIssue] response body:", data);
 
   if (
     typeof data === "object" &&
@@ -100,11 +108,16 @@ export async function createIssue(params: {
     (data as { success: unknown }).success === true
   ) {
     const parsed = data as CreateIssueSuccess;
+    console.log("[createIssue] parsed success payload:", {
+      issueNumber: parsed.issueNumber,
+      issueUrl: parsed.issueUrl,
+      mediaUrls: (parsed as any).media_urls,
+    });
     return {
       success: true,
       issueNumber: parsed.issueNumber,
       issueUrl: parsed.issueUrl,
-      mediaUrls: parsed.mediaUrls || [],
+      mediaUrls: (parsed as any).media_urls || [],
     };
   }
 
@@ -112,6 +125,8 @@ export async function createIssue(params: {
     typeof data === "object" && data !== null && "message" in data && typeof (data as { message?: unknown }).message === "string"
       ? (data as { message: string }).message
       : "Something went wrong while creating the issue.";
+
+  console.warn("[createIssue] treated as failure, message:", message);
 
   return { success: false, message };
 }
