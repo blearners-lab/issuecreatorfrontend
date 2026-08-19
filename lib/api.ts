@@ -104,7 +104,7 @@ export async function createIssue(params: {
       success: true,
       issueNumber: parsed.issueNumber,
       issueUrl: parsed.issueUrl,
-      mediaUrls: parsed.media_urls || [],
+      mediaUrls: parsed.mediaUrls || [],
     };
   }
 
