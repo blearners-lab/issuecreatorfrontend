@@ -4,8 +4,10 @@ import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   ALLOWED_IMAGE_TYPES,
+  ALLOWED_VIDEO_TYPES,
   ISSUE_TYPES,
   MAX_IMAGE_SIZE_BYTES,
+  MAX_VIDEO_SIZE_BYTES,
   createIssue,
   type IssueType,
 } from "@/lib/api";
@@ -13,16 +15,18 @@ import {
 interface FieldErrors {
   type?: string;
   description?: string;
-  image?: string;
+  media?: string;
   form?: string;
 }
 
 interface SuccessState {
   issueNumber: number;
   issueUrl: string;
+  mediaUrls: string[];
 }
 
 const MAX_IMAGE_SIZE_MB = MAX_IMAGE_SIZE_BYTES / (1024 * 1024);
+const MAX_VIDEO_SIZE_MB = MAX_VIDEO_SIZE_BYTES / (1024 * 1024);
 
 function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -32,46 +36,83 @@ export default function IssueReportForm() {
   const { user, logout } = useAuth();
   const [type, setType] = useState<IssueType>("Bug");
   const [description, setDescription] = useState("");
-  const [image, setImage] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<Map<string, string>>(new Map());
   const [errors, setErrors] = useState<FieldErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState<SuccessState | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
+  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = event.target.files ?? [];
 
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-      setPreviewUrl(null);
-    }
+    // Deduplicate: keep existing files, add new valid ones without duplicates
+    const existingFileNames = new Set(files.map((f) => f.name + f.type));
+    const validFiles: File[] = [];
+    const newPreviewUrls = new Map<string, string>();
 
-    if (!file) {
-      setImage(null);
-      return;
-    }
+    // Preserve existing preview URLs for files that are still in the list
+    files.forEach((f) => {
+      if (previewUrls.has(f.name + f.type)) {
+        newPreviewUrls.set(f.name + f.type, previewUrls.get(f.name + f.type)!);
+      }
+    });
 
-    if (!ALLOWED_IMAGE_TYPES.includes(file.type as (typeof ALLOWED_IMAGE_TYPES)[number])) {
-      setImage(null);
-      setErrors((prev) => ({ ...prev, image: "Only PNG, JPG, JPEG, or WEBP images are allowed." }));
-      event.target.value = "";
-      return;
-    }
+    // Process new selected files
+    Array.from(selectedFiles).forEach((file) => {
+      // Skip if already selected
+      if (existingFileNames.has(file.name + file.type)) {
+        return;
+      }
 
-    if (file.size > MAX_IMAGE_SIZE_BYTES) {
-      setImage(null);
-      setErrors((prev) => ({
-        ...prev,
-        image: `Image is too large (${formatBytes(file.size)}). Maximum size is ${MAX_IMAGE_SIZE_MB} MB.`,
-      }));
-      event.target.value = "";
-      return;
-    }
+      // Validate file type
+      const isImage = ALLOWED_IMAGE_TYPES.includes(file.type as (typeof ALLOWED_IMAGE_TYPES)[number]);
+      const isVideo = ALLOWED_VIDEO_TYPES.includes(file.type as (typeof ALLOWED_VIDEO_TYPES)[number]);
 
-    setErrors((prev) => ({ ...prev, image: undefined }));
-    setImage(file);
-    setPreviewUrl(URL.createObjectURL(file));
+      if (!isImage && !isVideo) {
+        setErrors((prev) => ({ ...prev, media: "Only PNG, JPG, JPEG, WEBP images or MP4/MOV videos are allowed." }));
+        event.target.value = "";
+        return;
+      }
+
+      // Validate file size
+      const maxSize = isImage ? MAX_IMAGE_SIZE_BYTES : MAX_VIDEO_SIZE_BYTES;
+      if (file.size > maxSize) {
+        setErrors((prev) => ({
+          ...prev,
+          media: `${isImage ? "Image" : "Video"} is too large (${formatBytes(file.size)}). Maximum size is ${isImage ? MAX_IMAGE_SIZE_MB : MAX_VIDEO_SIZE_MB} MB.`,
+        }));
+        event.target.value = "";
+        return;
+      }
+
+      validFiles.push(file);
+
+      // Create preview URL
+      const previewUrl = URL.createObjectURL(file);
+      newPreviewUrls.set(file.name + file.type, previewUrl);
+    });
+
+    // Merge: keep existing valid files with their URLs, add new files
+    const mergedFiles = [...files, ...validFiles];
+    // Remove duplicates from merged (keep first occurrence)
+    const seen = new Set<string>();
+    const dedupedFiles = mergedFiles.filter((f) => {
+      const key = f.name + f.type;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+
+    const mergedPreviewUrls = new Map([...newPreviewUrls]);
+    // Remove keys for files that were filtered out
+    seen.forEach((key) => mergedPreviewUrls.delete(key));
+
+    setFiles(dedupedFiles);
+    setPreviewUrls(mergedPreviewUrls);
+    setErrors((prev) => ({ ...prev, media: undefined }));
   }
 
   function validate(): FieldErrors {
@@ -82,8 +123,8 @@ export default function IssueReportForm() {
     if (!description.trim()) {
       nextErrors.description = "Description is required.";
     }
-    if (!image) {
-      nextErrors.image = "An image is required.";
+    if (files.length === 0) {
+      nextErrors.media = "At least one image or video is required.";
     }
     return nextErrors;
   }
@@ -93,19 +134,23 @@ export default function IssueReportForm() {
 
     const nextErrors = validate();
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0 || !image) {
+    if (files.length === 0) {
       return;
     }
 
     setIsSubmitting(true);
     setErrors({});
 
-    const result = await createIssue({ type, description: description.trim(), image });
+    const result = await createIssue({ type, description: description.trim(), files });
 
     setIsSubmitting(false);
 
     if (result.success) {
-      setSuccess({ issueNumber: result.issueNumber, issueUrl: result.issueUrl });
+      setSuccess({
+        issueNumber: result.issueNumber,
+        issueUrl: result.issueUrl,
+        mediaUrls: result.mediaUrls,
+      });
     } else {
       setErrors({ form: result.message });
     }
@@ -115,50 +160,77 @@ export default function IssueReportForm() {
     setSuccess(null);
     setType("Bug");
     setDescription("");
-    setImage(null);
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
-    setPreviewUrl(null);
-    setErrors({});
+    setFiles([]);
+    setPreviewUrls(new Map());
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+    setErrors({});
   }
 
-  if (success) {
-    return (
-      <div className="w-full max-w-lg rounded-2xl border border-emerald-200 bg-emerald-50 p-8 text-center shadow-sm">
-        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500 text-white">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-6 w-6">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-        </div>
-        <h2 className="text-lg font-semibold text-emerald-900">GitHub issue created successfully</h2>
-        <p className="mt-1 text-sm text-emerald-700">Issue #{success.issueNumber} is now open in the repository.</p>
-        <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-          <a
-            href={success.issueUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-700"
-          >
-            Open GitHub Issue
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H18m0 0v4.5M18 6l-8 8M6 12v6a1 1 0 001 1h6" />
-            </svg>
-          </a>
-          <button
-            type="button"
-            onClick={handleReportAnother}
-            className="text-sm font-medium text-emerald-700 underline-offset-2 hover:underline"
-          >
-            Report another issue
-          </button>
+  // Build preview gallery from preview URLs
+  const previewGallery = Array.from(previewUrls.entries()).map(([key, url], index) => (
+    <div
+      key={index}
+      className="mt-3 flex items-center gap-2"
+    >
+      {url && (
+        <div className="flex-1 min-w-0">
+          {(() => {
+            const isVideo = /video\/mp4|video\/quicktime/.test(key);
+            return isVideo ? (
+              <div
+                className="h-32 w-full rounded-lg border border-dashed border-gray-300 flex items-center justify-center text-sm text-gray-500"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  className="h-6 w-6 mx-auto"
+                >
+                  <path d="M4 4v16h16M16 4h1v16m-6-7h8m0 0v8m-8 0v-8M4 4v16h16M16 4h1v16m-6-7h8m0 0v8m-8 0v-8" />
+                </svg>
+                <p className="text-center pt-2">Video file</p>
+              </div>
+            ) : (
+              <img
+                src={url}
+                alt="Selected screenshot preview"
+                className="h-32 w-full rounded-lg border border-gray-200 object-cover"
+              />
+            );
+          })()}
         </div>
       </div>
-    );
-  }
+      {(() => {
+        const isVideo = /video\/mp4|video\/quicktime/.test(key);
+        return isVideo ? null : (
+          <button
+            type="button"
+            onClick={() => {
+              const newFiles = files.filter((f) => f.name + f.type !== key);
+              setFiles(newFiles);
+              setPreviewUrls((prev) => {
+                const newMap = new Map(prev);
+                newMap.delete(key);
+                return newMap;
+              });
+              // Revoke object URL
+              const urlEntry = Array.from(previewUrls.entries()).find(([k]) => k === key);
+              if (urlEntry) {
+                URL.revokeObjectURL(urlEntry[1]);
+              }
+            }}
+            className="ml-2 text-xs text-gray-400 hover:text-red-500"
+          >
+            ×
+          </button>
+        );
+      })()}
+    </div>
+  ));
 
   return (
     <form
@@ -178,7 +250,7 @@ export default function IssueReportForm() {
           <button
             type="button"
             onClick={logout}
-            className="text-sm font-medium text-gray-600 underline-offset-2 hover:underline hover:text-ink"
+            className="text-sm font-medium text-gray-600 underline-offset-2:hover:underline:hover:text-ink"
           >
             Sign out
           </button>
@@ -191,7 +263,7 @@ export default function IssueReportForm() {
         </div>
       )}
 
-      <div className="mt-6">
+      <div className="mt-5">
         <label htmlFor="issue-type" className="block text-sm font-medium text-gray-700">
           Issue Type
         </label>
@@ -232,34 +304,28 @@ export default function IssueReportForm() {
       </div>
 
       <div className="mt-5">
-        <label htmlFor="image" className="block text-sm font-medium text-gray-700">
-          Image
+        <label htmlFor="media" className="block text-sm font-medium text-gray-700">
+          Media
         </label>
         <input
-          id="image"
+          id="media"
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp"
-          onChange={handleImageChange}
+          multiple
+          accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime"
+          onChange={handleFileChange}
           className="mt-1.5 block w-full text-sm text-gray-600 file:mr-4 file:rounded-lg file:border-0 file:bg-gray-100 file:px-4 file:py-2 file:text-sm file:font-medium file:text-gray-700 hover:file:bg-gray-200"
         />
-        <p className="mt-1.5 text-xs text-gray-400">PNG, JPG, JPEG, or WEBP. Max {MAX_IMAGE_SIZE_MB} MB.</p>
-        {errors.image && <p className="mt-1.5 text-sm text-red-600">{errors.image}</p>}
-
-        {previewUrl && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={previewUrl}
-            alt="Selected screenshot preview"
-            className="mt-3 max-h-56 w-full rounded-lg border border-gray-200 object-contain"
-          />
-        )}
+        <p className="mt-1.5 text-xs text-gray-400">PNG, JPG, JPEG, WEBP or MP4/MOV. Max: {MAX_IMAGE_SIZE_MB} MB images, {MAX_VIDEO_SIZE_MB} MB videos.</p>
+        {errors.media && <p className="mt-1.5 text-sm text-red-600">{errors.media}</p>}
       </div>
+
+      {previewGallery}
 
       <button
         type="submit"
         disabled={isSubmitting}
-        className="mt-7 w-full rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+        className="mt-7 w-full rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-white transition:hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {isSubmitting ? "Creating issue…" : "Create GitHub Issue"}
       </button>

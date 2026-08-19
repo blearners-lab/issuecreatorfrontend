@@ -12,6 +12,7 @@ export interface CreateIssueSuccess {
   success: true;
   issueNumber: number;
   issueUrl: string;
+  mediaUrls: string[];
 }
 
 export interface CreateIssueFailure {
@@ -30,6 +31,7 @@ export interface UserIssue {
   issue_type: string;
   description: string;
   image_url: string;
+  media_urls: string[];
   created_at: string;
   user_id: number;
   user_name: string;
@@ -59,12 +61,13 @@ export async function fetchIssues(): Promise<UserIssue[]> {
 export async function createIssue(params: {
   type: IssueType;
   description: string;
-  image: File;
+  files: File[];
 }): Promise<CreateIssueResponse> {
   const formData = new FormData();
   formData.append("type", params.type);
   formData.append("description", params.description);
-  formData.append("image", params.image);
+  // Append all files as "media" array
+  params.files.forEach((file) => formData.append("media", file));
 
   let response: Response;
   try {
@@ -97,7 +100,12 @@ export async function createIssue(params: {
     (data as { success: unknown }).success === true
   ) {
     const parsed = data as CreateIssueSuccess;
-    return { success: true, issueNumber: parsed.issueNumber, issueUrl: parsed.issueUrl };
+    return {
+      success: true,
+      issueNumber: parsed.issueNumber,
+      issueUrl: parsed.issueUrl,
+      mediaUrls: parsed.media_urls || [],
+    };
   }
 
   const message =
